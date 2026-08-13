@@ -1,0 +1,108 @@
+# Guardrails for the credit-risk scoring model.
+#
+# Each rule fires an alert when its `when:` condition is TRUE for a record.
+# Editing this file is the whole point of the project -- no Python required.
+#
+#   when:       the breach condition, in the guardrail expression language
+#   severity:   info | warning | critical
+#   group_by:   evaluate windows separately per value of this field
+#   cooldown:   after an alert fires, fold further breaches of the same rule
+#               (and group) for this long; the count is kept on the next alert
+#   channels:   where breaches go (postgres always; console for a live terminal)
+#
+# Run `python -m mvguard.cli lint` after editing. It parses every rule and
+# dry-runs it against sample traffic before anything reaches production.
+
+rules:
+  - name: score_out_of_range
+    severity: critical
+    description: >
+      A probability that is not in [0, 1] means the serving layer returned a raw
+      pre-sigmoid value or a corrupted field. Every downstream threshold is
+      meaningless until this is fixed.
+    when: output.score < 0 or output.score > 1
+    channels: [postgres, console]
+
+  - name: score_missing
+    severity: critical
+    description: >
+      The model returned no score at all. Distinct from a score of zero, and
+      distinct from the field being absent from the payload.
+    when: is_null(output.score)
+    cooldown: 10s
+    channels: [postgres, console]
+
+  - name: score_drift_high
+    severity: warning
+    description: >
+      The average score over the last minute has climbed well above the level
+      this model was calibrated at. No individual record is out of range -- this
+      is only visible in aggregate, which is why the check is windowed. Grouped
+      by model version so a canary drifting on its own is attributed correctly
+      rather than being diluted by healthy primary traffic.
+    when: mean_over(output.score, 60s, 200) > 0.60
+    group_by: model_version
+    cooldown: 60s
+    channels: [postgres, console]
+
+  - name: latency_spike
+    severity: warning
+    description: A single scoring call took longer than the 250ms serving budget.
+    when: output.latency_ms > 250
+    cooldown: 10s
+
+  - name: latency_sustained
+    severity: warning
+    description: >
+      Average serving latency over the last 30 seconds is above 120ms. Catches a
+      genuinely degraded model, as opposed to the isolated slow request that
+      latency_spike reports.
+    when: mean_over(output.latency_ms, 30s, 100) > 120
+    group_by: model_version
+    cooldown: 60s
+    channels: [postgres, console]
+
+  - name: income_null_rate
+    severity: warning
+    description: >
+      More than 15% of records in the last minute arrived with a null income
+      feature. The model still returns a score for these, which is exactly why
+      this needs to alert -- silent imputation is invisible in the output.
+    when: rate_over(is_null(input.income), 60s, 200) > 0.15
+    cooldown: 60s
+    channels: [postgres, console]
+
+  - name: unknown_segment
+    severity: warning
+    description: >
+      A customer segment appeared that the model was never trained on. Usually
+      means an upstream service shipped a new category without telling anyone.
+    when: not (input.segment in ["retail", "smb", "enterprise"])
+    cooldown: 30s
+
+  - name: age_out_of_domain
+    severity: info
+    description: >
+      Age outside the 18-100 range the training data covered. Low-grade data
+      quality noise: worth counting, not worth paging.
+    when: input.age < 18 or input.age > 100
+    cooldown: 30s
+
+  - name: missing_utilisation_feature
+    severity: info
+    description: >
+      The credit_utilisation feature is absent from the payload entirely. Uses
+      is_missing rather than is_null because an absent field and an explicitly
+      null one have different owners -- absent means the producer never sent it.
+    when: is_missing(input.credit_utilisation)
+    cooldown: 60s
+
+  - name: label_contradicts_score
+    severity: critical
+    description: >
+      A score at or above the 0.66 reject threshold that did not produce a
+      reject label means the scoring service and the decision layer disagree.
+      This one is expected to stay silent -- it is here to show the difference
+      between a guardrail that holds and one that is simply never evaluated.
+    when: output.score >= 0.66 and output.label != "reject"
+    channels: [postgres, console]
