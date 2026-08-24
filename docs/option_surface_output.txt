@@ -1,0 +1,40 @@
+clean baseline: 300 snapshots, 12000 quotes, 0 alert(s)
+
+seeded run: 300 snapshots, 12000 quotes, 46 rule-level alert(s) from 24 planted seeds
+false-positive snapshots (alerts with no planted seed): none
+false-positive alert count: 0
+
+seed           snapshot   target family  families fired
+parity-01      snap-0010  parity         ['parity']  [OK]
+parity-02      snap-0034  parity         ['parity']  [OK]
+parity-03      snap-0058  parity         ['parity']  [OK]
+parity-04      snap-0082  parity         ['butterfly', 'monotonicity', 'parity']  [OK]
+parity-05      snap-0106  parity         ['parity']  [OK]
+parity-06      snap-0130  parity         ['butterfly', 'parity']  [OK]
+mono-01        snap-0014  monotonicity   ['butterfly', 'calendar', 'monotonicity']  [OK]
+mono-02        snap-0038  monotonicity   ['butterfly', 'calendar', 'monotonicity']  [OK]
+mono-03        snap-0062  monotonicity   ['butterfly', 'monotonicity']  [OK]
+mono-04        snap-0086  monotonicity   ['butterfly', 'monotonicity']  [OK]
+mono-05        snap-0110  monotonicity   ['butterfly', 'monotonicity']  [OK]
+mono-06        snap-0134  monotonicity   ['butterfly', 'calendar', 'monotonicity']  [OK]
+butterfly-01   snap-0018  butterfly      ['butterfly']  [OK]
+butterfly-02   snap-0042  butterfly      ['butterfly']  [OK]
+butterfly-03   snap-0066  butterfly      ['butterfly']  [OK]
+butterfly-04   snap-0090  butterfly      ['butterfly']  [OK]
+butterfly-05   snap-0114  butterfly      ['butterfly', 'calendar']  [OK]
+butterfly-06   snap-0138  butterfly      ['butterfly']  [OK]
+calendar-01    snap-0022  calendar       ['calendar']  [OK]
+calendar-02    snap-0046  calendar       ['calendar']  [OK]
+calendar-03    snap-0070  calendar       ['butterfly', 'calendar', 'monotonicity']  [OK]
+calendar-04    snap-0094  calendar       ['calendar']  [OK]
+calendar-05    snap-0118  calendar       ['butterfly', 'calendar']  [OK]
+calendar-06    snap-0142  calendar       ['calendar', 'monotonicity']  [OK]
+
+seeds caught (target family fired in its snapshot): 24/24
+false positives (alerts outside any seeded snapshot): 0
+
+note: several seeds trip more than one family in the same snapshot, because a
+mispricing large enough to clear a wide monotonicity/calendar tolerance is often
+also large enough to clear the much tighter parity tolerance at the same quote.
+that is counted here as the seed being caught, not as extra false positives,
+since every one of those extra firings is inside a snapshot that really was seeded.

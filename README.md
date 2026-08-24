@@ -509,6 +509,160 @@ to err for a system whose entire job is noticing things. There is no dedup key o
 the alerts table, so exactly-once would need one (rule name, group, event time,
 offset) plus an upsert; at-least-once was the deliberate choice here.
 
+## Extension: no-arbitrage guardrails for an option pricing surface
+
+Everything above this section is the original streaming guardrail engine,
+unchanged. This section adds a second, honest use of the same idea: instead
+of a risk model's scalar output stream, the guardrails now watch a
+synthetic option-chain surface for violations of four no-arbitrage
+identities, still as declarative rules a non-engineer can edit.
+
+- **The traffic is synthetic**, same as above: `mvguard/surface_producer.py`
+  generates a seeded, deterministic option-chain surface for a fictional
+  underlying (`FIC`), 8 strikes x 5 maturities x 300 snapshots = 12,000
+  quotes, built from a real Black-Scholes formula plus a small bid/ask
+  spread and jitter. There is no real exchange or real quotes behind this.
+- **This is a second engine, not a bolt-on to the first.** `mvguard/engine.py`
+  evaluates one rule against one record plus that record's own time-windowed
+  history. A no-arbitrage check compares several *different* quotes from the
+  *same* instant against each other, which is not a history at all. Rather
+  than teach the tokenizer and parser array traversal for a check that never
+  needs a window or a cooldown, `mvguard/surface_guardrails.py` is a small,
+  parallel engine with the same contract: `rules/option_surface_guardrails.yaml`
+  is the only place a non-engineer needs to touch (which check is armed, its
+  severity, its tolerance), and the comparison arithmetic lives in exactly
+  one auditable file underneath it.
+
+### The four rules
+
+```yaml
+- name: put_call_parity
+  family: parity
+  tolerance: 0.05
+- name: strike_monotonicity
+  family: monotonicity
+  tolerance: 0.02
+- name: butterfly_convexity
+  family: butterfly
+  tolerance: 0.02
+- name: calendar_spread
+  family: calendar
+  tolerance: 0.02
+```
+
+**Put-call parity**: `call_mid - put_mid` must equal `spot - strike *
+exp(-rate * T)` within tolerance. **Strike monotonicity**: call price
+non-increasing in strike, put price non-decreasing, at a fixed maturity.
+**Butterfly convexity**: for three equally spaced strikes, the discrete
+second difference of call price must not be more negative than
+`-tolerance`. **Calendar spread**: at a fixed strike, a longer-maturity call
+must not be cheaper than a shorter one by more than tolerance. Full
+definitions: `rules/option_surface_guardrails.yaml`.
+
+### What one seed actually breaks
+
+The seeded surface plants exactly 24 violations, 6 per family, each in its
+own snapshot. The first version of the seed generator moved a single quote's
+`call_mid` by a hand-picked round number (3 to 5 for monotonicity, roughly 1
+for butterfly and calendar) and measured a surprise: only 15 of 24 seeds
+tripped their own target family when run through the engine, and several
+that did also tripped parity.
+
+The measurement that discriminated was running the seeded surface through
+`mvguard/surface_guardrails.py` and diffing which family fired against which
+family each seed named as its target. The pattern was not random: every seed
+that used a delta of a few dollars on `call_mid` alone also broke parity,
+because parity only needs a 0.05 gap on that exact quote and a multi-dollar
+move clears that trivially, while whether the same move clears a
+monotonicity or calendar gap depends on the local price gradient at that
+strike and maturity, which moves with the random-walked spot and is not a
+constant. A flat guessed delta sometimes cleared the target tolerance and
+sometimes did not, and when it did, it dragged parity along almost for free.
+
+The fix, in `mvguard/surface_producer.py::_apply_seed`: for every family
+except parity, the delta is computed from the actual neighboring quotes in
+that snapshot, sized to clear the target tolerance by a fixed clearance
+margin (0.05), and applied to **both** `call_mid` and `put_mid` of the
+target quote by the same amount. Shifting both fields equally cancels their
+effect on `call_mid - put_mid`, so parity stops firing as a side effect;
+only the field the target check actually reads (call price for butterfly
+and calendar, whichever side the spec names for monotonicity) still moves in
+the way that trips the intended rule. Parity seeds are unaffected by this
+fix and stay a plain, isolated, single-field delta.
+
+After the fix: **24 of 24 seeds catch their target family, with zero alerts
+in any unseeded snapshot.** The raw rule-firing count is still 46, not 24,
+because several seeds legitimately clear more than one family's tolerance in
+the same snapshot (a large enough butterfly or calendar violation frequently
+also breaks monotonicity between the same strikes, which is a real property
+of these identities, not a seeding artifact): `docs/option_surface_output.txt`
+lists every seed and every family it fired. The honest claim is "24 seeded
+violations caught, zero false positives", measured at the seed level, not
+"exactly 24 alerts".
+
+### Triggering inputs
+
+Every alert this engine emits carries a `snapshot` dict (the strike(s),
+maturity(ies), and prices actually compared, plus the surface's spot and
+rate) and an `observed` dict (the exact numeric comparison and the tolerance
+it failed), matching the convention `mvguard/engine.py` already uses.
+Example, straight out of a real run:
+
+```
+family: butterfly
+snapshot: {'maturity_days': 120, 'strikes': (90.0, 100.0, 110.0),
+           'call_mids': (14.02, 8.6553, 4.62), 'spot': 100.99, 'rate': 0.03}
+observed: {'second_difference': -0.5253, 'tolerance': -0.02}
+```
+
+### Measured results
+
+Python 3.12.10 on Windows 11, no Kafka or PostgreSQL involved (this
+extension runs entirely in-process over a Python list of dicts):
+
+```
+$ python scripts/run_option_surface_check.py
+clean baseline: 300 snapshots, 12000 quotes, 0 alert(s)
+
+seeded run: 300 snapshots, 12000 quotes, 46 rule-level alert(s) from 24 planted seeds
+false-positive snapshots (alerts with no planted seed): none
+false-positive alert count: 0
+...
+seeds caught (target family fired in its snapshot): 24/24
+false positives (alerts outside any seeded snapshot): 0
+```
+
+Full transcript: `docs/option_surface_output.txt`. The pre-existing
+streaming guardrail numbers earlier in this README are untouched by this
+extension; both engines share the repository but not any state.
+
+### Running it
+
+```bash
+python scripts/run_option_surface_check.py       # measure against the seeded surface
+python -m pytest tests/test_option_surface.py -q # unit tests for this extension
+python -m pytest tests/ -q                        # full suite, including the pre-existing 117
+```
+
+### Limitations of this extension
+
+- **Strike spacing must be literally equal** for the butterfly check to fire
+  on a triple; an irregular strike ladder silently skips that triple rather
+  than approximating convexity across unequal spacing.
+- **No dividend yield.** Put-call parity and the calendar-spread check both
+  assume a zero dividend yield; a real equity surface would need a `q` term
+  in both formulas.
+- **A snapshot with a missing quote just narrows what gets checked**, it
+  does not raise an error the way `mvguard/expr`'s `is_missing` machinery
+  does for the streaming engine; this engine has no analogous "undetermined"
+  outcome yet.
+- **In-process only.** Unlike the streaming engine, this extension does not
+  read from Kafka or write to Postgres; it operates on a list of snapshot
+  dicts. Wiring it to the same `PostgresSink` would mean giving each
+  violation its own `rule_name`/`group_key` the way `mvguard/engine.py`
+  alerts already do, which the alert shape here was deliberately kept
+  compatible with.
+
 ## Limitations
 
 - **One partition, one consumer.** Global windowed rules need a totally ordered

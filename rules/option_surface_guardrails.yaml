@@ -1,0 +1,55 @@
+# No-arbitrage guardrails for an option-chain surface.
+#
+# This file is what a non-engineer edits: the four checks below, whether each
+# is armed, its severity, and its tolerance. The comparison arithmetic each
+# family runs is fixed and lives in one auditable place,
+# mvguard/surface_guardrails.py; nothing here can change what a check
+# compares, only whether it is on and how strict it is. That split is the
+# same shape as rules/guardrails.yaml (declarative config, engine code
+# underneath), applied to a cross-sectional surface instead of a per-record
+# stream. See README.md, "Extension: no-arbitrage guardrails for an option
+# surface", for why a surface needs a different unit of evaluation than the
+# streaming rules above it.
+
+- name: put_call_parity
+  family: parity
+  enabled: true
+  severity: critical
+  tolerance: 0.05
+  description: >
+    call_mid - put_mid must equal spot - strike * exp(-rate * maturity_years)
+    within tolerance, for a European option with no dividends. A larger gap
+    is a synthetic-forward arbitrage: buy the cheap side, sell the rich side.
+
+- name: strike_monotonicity
+  family: monotonicity
+  enabled: true
+  severity: critical
+  tolerance: 0.02
+  description: >
+    Call price must be non-increasing in strike, and put price must be
+    non-decreasing in strike, for a fixed maturity. A violation is a
+    vertical-spread arbitrage: the wrong-priced pair can be bought and sold
+    for a guaranteed profit.
+
+- name: butterfly_convexity
+  family: butterfly
+  enabled: true
+  severity: critical
+  tolerance: 0.02
+  description: >
+    For three equally spaced strikes K1 < K2 < K3 at the same maturity,
+    call[K1] - 2*call[K2] + call[K3] must be at least -tolerance. A more
+    negative second difference means the middle strike is priced rich enough
+    that a long butterfly locks in a riskless profit.
+
+- name: calendar_spread
+  family: calendar
+  enabled: true
+  severity: critical
+  tolerance: 0.02
+  description: >
+    For a fixed strike and no dividends, a longer-maturity call must not be
+    cheaper than a shorter-maturity call by more than tolerance. A longer
+    option strictly dominates a shorter one at the same strike, so a large
+    enough gap the wrong way is a calendar-spread arbitrage.
