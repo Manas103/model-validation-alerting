@@ -1,0 +1,48 @@
+# Prepayment model monitoring: actual-versus-predicted CPR tolerance,
+# population-stability and stale-input checks for a deployed prepayment
+# model. This file is what a non-engineer edits: which check is armed, its
+# severity, and its tolerance or threshold. The comparison arithmetic each
+# family runs is fixed and lives in one auditable place,
+# mvguard/prepayment_monitor.py; nothing here can change what a check
+# compares, only whether it is on and how strict it is. Same split
+# rules/price_verification_guardrails.yaml uses for the forward-mark
+# checks. See README.md, "Extension: prepayment model monitoring and
+# month-end exception pack".
+
+- name: cpr_actual_vs_predicted
+  family: cpr_tolerance
+  enabled: true
+  severity: critical
+  tolerance: 3.0
+  description: >
+    A cohort-month whose realized CPR deviates from the model's predicted
+    CPR by more than 3.0 percentage points is flagged. This is the model's
+    core accuracy check, run every month, at the cohort level rather than
+    only in aggregate, so a single cohort going wrong cannot hide inside an
+    average that still looks fine.
+
+- name: refi_incentive_stale
+  family: stale_input
+  enabled: true
+  severity: warning
+  stale_months: 6
+  description: >
+    A cohort whose refi-incentive input has not changed at all for 6
+    consecutive months is flagged as stale. Refinance incentive tracks the
+    spread between a cohort's note rate and the prevailing market rate;
+    both move continuously, so a bit-for-bit frozen value for half a year
+    almost always means the upstream feed stopped updating, not that rates
+    genuinely held still to the basis point.
+
+- name: refi_incentive_population_shift
+  family: population_stability
+  enabled: true
+  severity: critical
+  threshold: 0.25
+  description: >
+    A Population Stability Index above 0.25 between a month's cohort
+    population and the baseline population the model was validated against
+    is flagged as a significant population shift, the standard industry
+    cutoff for "the scoring population no longer resembles the population
+    the model was built on". Computed monthly over the whole cohort
+    population's refi-incentive distribution, not per cohort.

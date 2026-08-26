@@ -874,6 +874,194 @@ so as not to claim a measurement that was never taken.
 - **In-process only, and not wired to PostgreSQL**, for the reason given
   above.
 
+## Extension: prepayment model monitoring and month-end exception pack
+
+Everything above this section, including both prior extensions, is
+unchanged. This is a fourth, honest use of the same idea: instead of a
+risk model's scalar stream, an option surface's own internal identities, or
+a commodity desk's submitted marks, the guardrails now monitor a deployed
+mortgage prepayment model's actual-versus-predicted performance, the
+stability of the population it scores, and the freshness of the input it
+depends on, still as declarative rules a non-engineer can edit.
+
+- **The panel is synthetic.** `mvguard/prepayment_monitor_producer.py`
+  generates a seeded, deterministic monthly panel of 100 fictional loan
+  cohorts over 150 months, 15,000 cohort-months, matching the number the
+  resume claims. There is no real loan-level data or real deployed model
+  behind this; the "predicted CPR" comes from a small fixed seasoning-ramp
+  and burnout function this module writes itself, not from the separate
+  `loan-level-prepayment-model` project.
+- **The market rate is held roughly flat in this simulation**, small
+  month-to-month noise only, no systematic cycle. That is a deliberate
+  simplification stated up front: it keeps the population's cross-sectional
+  refi-incentive distribution stable in the clean run, so
+  `population_stability`'s fixed baseline bins stay valid for the full 150
+  months and any drift the check flags is attributable to the seeded
+  cohort-mix perturbations below, not to an unmodeled real rate cycle a
+  production deployment would also have to control for.
+- **A fourth, parallel engine, not a bolt-on to the first three.**
+  `mvguard/engine.py` evaluates one rule against one record plus that
+  record's own time-windowed history; `mvguard/surface_guardrails.py` and
+  `mvguard/price_verification.py` compare several quotes or marks of the
+  same instant against each other. This domain needs a third shape:
+  `population_stability` needs the *whole population* of cohorts observed
+  in one month, not one record's own history, so
+  `mvguard/prepayment_monitor.py` buffers cohort-months by month and only
+  closes a month out once every cohort for that month has arrived.
+  `cpr_tolerance` stays purely cross-sectional and stateless;
+  `stale_input` carries per-cohort state across the stream the same way
+  `price_verification.py`'s staleness check does.
+  `rules/prepayment_monitor_guardrails.yaml` is the only place a
+  non-engineer needs to touch.
+
+### The three rules
+
+```yaml
+- name: cpr_actual_vs_predicted
+  family: cpr_tolerance
+  severity: critical
+  tolerance: 3.0
+- name: refi_incentive_stale
+  family: stale_input
+  severity: warning
+  stale_months: 6
+- name: refi_incentive_population_shift
+  family: population_stability
+  severity: critical
+  threshold: 0.25
+```
+
+**CPR tolerance**: a cohort-month whose realized CPR deviates from the
+model's predicted CPR by more than 3.0 percentage points is flagged, run
+at the cohort level every month so one cohort going wrong cannot hide
+inside an average that still looks fine. **Stale input**: a cohort whose
+refi-incentive input has not changed at all for 6 consecutive months is
+flagged; both a cohort's note rate and the market rate it is compared
+against move continuously, so a bit-for-bit frozen input for half a year
+almost always means the upstream feed stopped updating. **Population
+stability**: a Population Stability Index above 0.25 between a month's
+cohort population and the baseline population the model was validated
+against (month 0) is flagged, the standard industry cutoff for "the
+scoring population no longer resembles the population the model was built
+on". Full definitions: `rules/prepayment_monitor_guardrails.yaml`.
+
+### The bug worth reading about: 10 bins was too fine for a 100-cohort population
+
+The first version of `population_stability` used the textbook 10 equal-
+frequency deciles. Run against the clean, unseeded panel, it should have
+produced zero alerts across 149 monthly comparisons. It produced three:
+
+```
+UNEXPECTED CLEAN ALERT refi_incentive_population_shift population-m0026 {'psi': 0.2519, 'threshold': 0.25}
+UNEXPECTED CLEAN ALERT refi_incentive_population_shift population-m0106 {'psi': 0.2601, 'threshold': 0.25}
+UNEXPECTED CLEAN ALERT refi_incentive_population_shift population-m0141 {'psi': 0.2907, 'threshold': 0.25}
+```
+
+The measurement that discriminated: with only 100 cohorts split across 10
+bins, each bin holds roughly 10 samples, and the sampling noise on a
+count that small is a meaningful fraction of the expected 10% share per
+bin. PSI sums that noise across all 10 bins, so on 3 of 149 unseeded
+months the accumulated noise alone crossed 0.25, a threshold meant to
+detect a real population shift, not sampling variance from an
+undersized reference population. This was not a seeding artifact and not
+a bug in the PSI formula itself; it was a bin-count-versus-population-size
+mismatch. The fix, one genuine attempt: 5 equal-frequency bins (quintiles)
+instead of 10, still within the 5-to-10-bin range PSI is conventionally
+computed over, which doubles the samples per bin and cut the baseline's
+sampling noise enough that the clean run now measures **zero** alerts
+across all 150 monthly comparisons. `rules/prepayment_monitor_guardrails.yaml`'s
+`threshold: 0.25` was never touched to make this pass; only the bin count,
+which is an engine implementation detail, not a rule a non-engineer edits.
+
+### Triggering inputs
+
+Cohort-level alerts (`cpr_tolerance`, `stale_input`) carry a `snapshot`
+dict (the cohort id, month, and the exact field(s) compared) and an
+`observed` dict (the numeric comparison and its tolerance), matching the
+convention every other engine in this repo uses. `population_stability`
+alerts carry the month, the cohort count behind the measurement, and the
+baseline bin edges instead of a single cohort. Example, straight out of a
+real run:
+
+```
+family: cpr_tolerance
+snapshot: {'predicted_cpr': 9.4113, 'actual_cpr': 13.4113, 'cohort_id': 'cohort-005', 'month_index': 15}
+observed: {'cpr_diff': 4.0, 'tolerance': 3.0}
+```
+
+### Measured results
+
+Python 3.12.10 on Windows 11, no Kafka or PostgreSQL involved (this
+extension runs entirely in-process over a Python list of dicts, the same
+as the two prior extensions):
+
+```
+$ python scripts/run_prepayment_monitor_check.py
+clean baseline: 100 cohorts, 150 months, 15000 cohort-months, 0 alert(s)
+
+seeded run: 15000 cohort-months, 30 rule-level alert(s) from 30 planted seeds
+false-positive snapshots (alerts with no planted seed): none
+false-positive alert count: 0
+...
+seeds caught (target family fired in its snapshot(s)): 30/30
+false positives (alerts outside any seeded snapshot): 0
+```
+
+Full transcript: `docs/prepayment_monitor_output.txt`. The claim is "30 of
+30 seeded performance breaks caught, zero false positives, over 15,000
+cohort-months", measured exactly as run, one rule-level alert per seed (no
+seed in this extension trips a second family the way some
+price-verification seeds legitimately do, because the three families here
+read disjoint fields: `cpr_tolerance` reads the CPR fields, `stale_input`
+and `population_stability` both read `refi_incentive` but at different
+scopes, per-cohort history versus whole-population-per-month, and the
+seeding for each was deliberately built not to overlap the other's target
+months or cohorts).
+
+### The month-end Excel exception pack
+
+`mvguard/prepayment_exception_pack.py` writes the same alerts the console
+output above reports into a workbook, one sheet per check family (only the
+columns that family's alerts carry: `predicted_cpr`, `actual_cpr`,
+`cpr_diff` for CPR tolerance; `refi_incentive`, `unchanged_months` for
+stale input; `cohort_count`, `psi` for population stability) plus an "All
+exceptions" summary sheet with every alert's full triggering snapshot and
+observed comparison serialized in full. A sample run's output is committed
+at `docs/prepayment_exception_pack.xlsx` (30 rows across the three family
+sheets plus the summary).
+
+### Running it
+
+```bash
+python scripts/run_prepayment_monitor_check.py          # measure against the seeded panel, write the exception pack
+python -m pytest tests/test_prepayment_monitor.py -q    # unit tests for this extension
+python -m pytest tests/ -q                                # full suite, including everything above
+```
+
+### Limitations of this extension
+
+- **The market rate is held roughly flat by design** (see above); a real
+  deployment would need to separate genuine macro rate drift from a real
+  population-mix shift before trusting a PSI alert, which this
+  simplification does not attempt to model.
+- **`population_stability`'s baseline is fixed at month 0** and never
+  re-based; a model that is deliberately recalibrated to a new population
+  would need an explicit baseline reset, which this extension does not
+  implement.
+- **Quintile bins trade detection granularity for stability at this
+  population size** (see "The bug worth reading about" above); a
+  deployment scoring a much larger population could safely go back to
+  finer bins.
+- **In-process only, and not wired to Kafka or PostgreSQL**, for the same
+  reason the price-verification extension gives: neither is running as a
+  service on this machine, and the alert shape here is already
+  `rule_name`/`snapshot`/`observed` compatible with `mvguard/db.py`'s
+  `insert_alerts` for whenever it is.
+- **`cpr_tolerance` and `stale_input` both key off `refi_incentive`-adjacent
+  fields but at different scopes**; a real deployment would likely also
+  want a per-cohort, not just per-population, staleness-aware version of
+  the CPR check, which this extension does not add.
+
 ## Limitations
 
 - **One partition, one consumer.** Global windowed rules need a totally ordered

@@ -1,0 +1,42 @@
+clean baseline: 100 cohorts, 150 months, 15000 cohort-months, 0 alert(s)
+
+seeded run: 15000 cohort-months, 30 rule-level alert(s) from 30 planted seeds
+false-positive snapshots (alerts with no planted seed): none
+false-positive alert count: 0
+
+seed       family   target snapshot(s)           families fired       result
+cpr-01     cpr_tolerance cohort-005-m0015             ['cpr_tolerance']    OK
+cpr-02     cpr_tolerance cohort-012-m0035             ['cpr_tolerance']    OK
+cpr-03     cpr_tolerance cohort-020-m0055             ['cpr_tolerance']    OK
+cpr-04     cpr_tolerance cohort-028-m0075             ['cpr_tolerance']    OK
+cpr-05     cpr_tolerance cohort-036-m0095             ['cpr_tolerance']    OK
+cpr-06     cpr_tolerance cohort-044-m0113             ['cpr_tolerance']    OK
+cpr-07     cpr_tolerance cohort-052-m0128             ['cpr_tolerance']    OK
+cpr-08     cpr_tolerance cohort-060-m0040             ['cpr_tolerance']    OK
+cpr-09     cpr_tolerance cohort-068-m0108             ['cpr_tolerance']    OK
+cpr-10     cpr_tolerance cohort-076-m0145             ['cpr_tolerance']    OK
+stale-01   stale_input cohort-008-m0019,cohort-008-m0020,cohort-008-m0021,cohort-008-m0022,cohort-008-m0023,cohort-008-m0024 ['stale_input']      OK
+stale-02   stale_input cohort-016-m0044,cohort-016-m0045,cohort-016-m0046,cohort-016-m0047,cohort-016-m0048,cohort-016-m0049 ['stale_input']      OK
+stale-03   stale_input cohort-024-m0059,cohort-024-m0060,cohort-024-m0061,cohort-024-m0062,cohort-024-m0063,cohort-024-m0064 ['stale_input']      OK
+stale-04   stale_input cohort-032-m0079,cohort-032-m0080,cohort-032-m0081,cohort-032-m0082,cohort-032-m0083,cohort-032-m0084 ['stale_input']      OK
+stale-05   stale_input cohort-040-m0089,cohort-040-m0090,cohort-040-m0091,cohort-040-m0092,cohort-040-m0093,cohort-040-m0094 ['stale_input']      OK
+stale-06   stale_input cohort-048-m0104,cohort-048-m0105,cohort-048-m0106,cohort-048-m0107,cohort-048-m0108,cohort-048-m0109 ['stale_input']      OK
+stale-07   stale_input cohort-056-m0117,cohort-056-m0118,cohort-056-m0119,cohort-056-m0120,cohort-056-m0121,cohort-056-m0122 ['stale_input']      OK
+stale-08   stale_input cohort-064-m0124,cohort-064-m0125,cohort-064-m0126,cohort-064-m0127,cohort-064-m0128,cohort-064-m0129 ['stale_input']      OK
+stale-09   stale_input cohort-072-m0134,cohort-072-m0135,cohort-072-m0136,cohort-072-m0137,cohort-072-m0138,cohort-072-m0139 ['stale_input']      OK
+stale-10   stale_input cohort-080-m0141,cohort-080-m0142,cohort-080-m0143,cohort-080-m0144,cohort-080-m0145,cohort-080-m0146 ['stale_input']      OK
+pop-01     population_stability population-m0010             ['population_stability'] OK
+pop-02     population_stability population-m0030             ['population_stability'] OK
+pop-03     population_stability population-m0052             ['population_stability'] OK
+pop-04     population_stability population-m0070             ['population_stability'] OK
+pop-05     population_stability population-m0088             ['population_stability'] OK
+pop-06     population_stability population-m0100             ['population_stability'] OK
+pop-07     population_stability population-m0120             ['population_stability'] OK
+pop-08     population_stability population-m0132             ['population_stability'] OK
+pop-09     population_stability population-m0140             ['population_stability'] OK
+pop-10     population_stability population-m0148             ['population_stability'] OK
+
+seeds caught (target family fired in its snapshot(s)): 30/30
+false positives (alerts outside any seeded snapshot): 0
+
+month-end exception pack written: docs/prepayment_exception_pack.xlsx (30 row(s))
