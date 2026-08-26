@@ -1,0 +1,48 @@
+# Independent price verification for a forward-mark curve.
+#
+# This file is what a non-engineer edits: the three checks below, whether
+# each is armed, its severity, and its tolerance or threshold. The comparison
+# arithmetic each family runs is fixed and lives in one auditable place,
+# mvguard/price_verification.py; nothing here can change what a check
+# compares, only whether it is on and how strict it is. That is the same
+# split rules/option_surface_guardrails.yaml uses for the no-arbitrage
+# checks, applied to a submitted forward curve checked against an
+# independent source instead of an option surface checked against itself.
+# See README.md, "Extension: independent price verification for a
+# forward-mark curve".
+
+- name: submitted_mark_stale
+  family: staleness
+  enabled: true
+  severity: warning
+  stale_sessions: 5
+  description: >
+    A submitted mark that has not changed at all for 5 consecutive sessions
+    is flagged as stale. A forward curve that genuinely moves session to
+    session should not produce a bit-for-bit identical mark five days
+    running; a frozen mark usually means nobody re-priced it, not that the
+    market held still.
+
+- name: off_market_point
+  family: off_market
+  enabled: true
+  severity: critical
+  tolerance: 0.004
+  description: >
+    A submitted mark that deviates from the independent source by more than
+    0.4% of the independent value is flagged as off-market. Tolerance is
+    relative, not a fixed dollar amount, because price levels differ by more
+    than 25x across the commodities this pack covers.
+
+- name: calendar_spread_inconsistent
+  family: calendar_spread
+  enabled: true
+  severity: critical
+  tolerance: 0.006
+  description: >
+    For each pair of adjacent tenors, the spread between the submitted marks
+    must track the spread between the independent source's own marks for the
+    same two tenors, within 0.6% of the shorter tenor's independent value. A
+    submitted curve whose shape has come unglued from the independent
+    curve's shape, even if every individual point looks close enough on its
+    own, is a calendar-spread inconsistency.

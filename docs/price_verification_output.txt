@@ -1,0 +1,42 @@
+clean baseline: 150 sessions, 1200 snapshots, 12000 marks, 0 alert(s)
+
+seeded run: 1200 snapshots, 12000 marks, 58 rule-level alert(s) from 24 planted seeds
+false-positive snapshots (alerts with no planted seed): none
+false-positive alert count: 0
+
+seed         commodity  target snapshot(s)   target family    families fired
+stale-01     FIC-CL     FIC-CL-sess0009,FIC-CL-sess0010,FIC-CL-sess0011,FIC-CL-sess0012,FIC-CL-sess0013 staleness        ['off_market', 'staleness']  [OK]
+stale-02     FIC-NG     FIC-NG-sess0029,FIC-NG-sess0030,FIC-NG-sess0031,FIC-NG-sess0032,FIC-NG-sess0033 staleness        ['staleness']  [OK]
+stale-03     FIC-HO     FIC-HO-sess0049,FIC-HO-sess0050,FIC-HO-sess0051,FIC-HO-sess0052,FIC-HO-sess0053 staleness        ['calendar_spread', 'off_market', 'staleness']  [OK]
+stale-04     FIC-RB     FIC-RB-sess0069,FIC-RB-sess0070,FIC-RB-sess0071,FIC-RB-sess0072,FIC-RB-sess0073 staleness        ['off_market', 'staleness']  [OK]
+stale-05     FIC-GC     FIC-GC-sess0089,FIC-GC-sess0090,FIC-GC-sess0091,FIC-GC-sess0092,FIC-GC-sess0093 staleness        ['staleness']  [OK]
+stale-06     FIC-SI     FIC-SI-sess0109,FIC-SI-sess0110,FIC-SI-sess0111,FIC-SI-sess0112,FIC-SI-sess0113 staleness        ['staleness']  [OK]
+stale-07     FIC-HG     FIC-HG-sess0124,FIC-HG-sess0125,FIC-HG-sess0126,FIC-HG-sess0127,FIC-HG-sess0128 staleness        ['off_market', 'staleness']  [OK]
+stale-08     FIC-PL     FIC-PL-sess0139,FIC-PL-sess0140,FIC-PL-sess0141,FIC-PL-sess0142,FIC-PL-sess0143 staleness        ['staleness']  [OK]
+offmkt-01    FIC-CL     FIC-CL-sess0015      off_market       ['calendar_spread', 'off_market']  [OK]
+offmkt-02    FIC-NG     FIC-NG-sess0040      off_market       ['calendar_spread', 'off_market']  [OK]
+offmkt-03    FIC-HO     FIC-HO-sess0055      off_market       ['calendar_spread', 'off_market']  [OK]
+offmkt-04    FIC-RB     FIC-RB-sess0075      off_market       ['calendar_spread', 'off_market']  [OK]
+offmkt-05    FIC-GC     FIC-GC-sess0095      off_market       ['calendar_spread', 'off_market']  [OK]
+offmkt-06    FIC-SI     FIC-SI-sess0115      off_market       ['calendar_spread', 'off_market']  [OK]
+offmkt-07    FIC-HG     FIC-HG-sess0130      off_market       ['calendar_spread', 'off_market']  [OK]
+offmkt-08    FIC-PL     FIC-PL-sess0145      off_market       ['calendar_spread', 'off_market']  [OK]
+cal-01       FIC-CL     FIC-CL-sess0020      calendar_spread  ['calendar_spread', 'off_market']  [OK]
+cal-02       FIC-NG     FIC-NG-sess0045      calendar_spread  ['calendar_spread', 'off_market']  [OK]
+cal-03       FIC-HO     FIC-HO-sess0060      calendar_spread  ['calendar_spread', 'off_market']  [OK]
+cal-04       FIC-RB     FIC-RB-sess0080      calendar_spread  ['calendar_spread', 'off_market']  [OK]
+cal-05       FIC-GC     FIC-GC-sess0100      calendar_spread  ['calendar_spread', 'off_market']  [OK]
+cal-06       FIC-SI     FIC-SI-sess0120      calendar_spread  ['calendar_spread', 'off_market']  [OK]
+cal-07       FIC-HG     FIC-HG-sess0135      calendar_spread  ['calendar_spread', 'off_market']  [OK]
+cal-08       FIC-PL     FIC-PL-sess0148      calendar_spread  ['calendar_spread', 'off_market']  [OK]
+
+seeds caught (target family fired in its snapshot(s)): 24/24
+false positives (alerts outside any seeded snapshot): 0
+
+note: a handful of seeds also trip a second family in the same seeded snapshot
+(an off-market delta at one tenor mechanically shifts that tenor's adjacent
+calendar spreads too). That is counted here as the seed being caught, not as
+an extra false positive, since every one of those extra firings is inside a
+snapshot that really was seeded. See README, 'What one seed actually breaks'.
+
+month-end exception pack written: docs/exception_pack.xlsx (58 row(s))

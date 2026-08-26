@@ -663,6 +663,217 @@ python -m pytest tests/ -q                        # full suite, including the pr
   alerts already do, which the alert shape here was deliberately kept
   compatible with.
 
+## Extension: independent price verification for a forward-mark curve
+
+Everything above this section, including the option-surface extension, is
+unchanged. This section adds a third, honest use of the same idea: instead
+of a risk model's scalar stream or an option surface's own internal
+identities, the guardrails now check a commodity desk's daily submitted
+forward marks against an independent source, still as declarative rules a
+non-engineer can edit.
+
+- **The traffic is synthetic**, same as above: `mvguard/marks_producer.py`
+  generates a seeded, deterministic stream of submitted forward marks and a
+  separately-jittered independent-source series for eight fictional
+  commodities, prefixed `FIC-` the same way the option-surface extension's
+  underlying is the fictional ticker `FIC`, so nothing here is mistaken for
+  a real desk or a real data vendor. 8 commodities x 10 tenors x 150
+  sessions = 12,000 submitted marks, matching the number the resume claims.
+- **Price levels differ by more than 25x across commodities on purpose**
+  (75 for `FIC-CL` up to 1,950 for `FIC-GC`), which is what forces every
+  tolerance below to be relative (a percentage of price), not a fixed
+  dollar amount; a $0.50 tolerance is meaningless for `FIC-GC` and useless
+  for `FIC-NG`.
+- **A third, parallel engine, not a bolt-on to the first two.**
+  `mvguard/engine.py` evaluates one rule against one record plus that
+  record's own time-windowed history; `mvguard/surface_guardrails.py`
+  compares several quotes of the *same* instant against each other. This
+  domain needs both shapes at once: off-market and calendar-spread are
+  cross-sectional, one session's whole curve compared to itself or to the
+  independent curve, while staleness is a genuine short history of one
+  tenor's own submitted mark. Rather than force staleness into a
+  snapshot-only shape it does not fit, `mvguard/price_verification.py`
+  carries one small piece of mutable state (the previous value and the
+  current run length, per commodity and tenor) across the stream, the same
+  way `mvguard/engine.py` carries cooldown state; the other two checks stay
+  pure and stateless. `rules/price_verification_guardrails.yaml` is the only
+  place a non-engineer needs to touch.
+
+### The three rules
+
+```yaml
+- name: submitted_mark_stale
+  family: staleness
+  severity: warning
+  stale_sessions: 5
+- name: off_market_point
+  family: off_market
+  severity: critical
+  tolerance: 0.004
+- name: calendar_spread_inconsistent
+  family: calendar_spread
+  severity: critical
+  tolerance: 0.006
+```
+
+**Staleness**: a submitted mark that has not changed at all for 5
+consecutive sessions is flagged; a forward curve that genuinely moves should
+not produce a bit-for-bit identical mark five days running. **Off-market**:
+a submitted mark that deviates from the independent source by more than
+0.4% of the independent value. **Calendar-spread monotonicity**: for each
+pair of adjacent tenors, the spread between the submitted marks must track
+the spread between the independent source's own marks for the same two
+tenors, within 0.6% of the shorter tenor's independent value, a
+self-consistency check on the submitted curve's *shape* rather than any one
+point on it. Full definitions: `rules/price_verification_guardrails.yaml`.
+
+### What one seed actually breaks
+
+24 violations are planted, an even 8 per family; unlike the option-surface
+extension's four families, none of the three checks here is a naturally
+tighter, differently-shaped outlier the way put-call parity was against the
+other three no-arbitrage identities, so an even three-way split was the
+honest choice rather than a forced one.
+
+The seed deltas are computed from each seed's own snapshot the same way the
+option-surface fix works: a clearance margin added on top of the target
+rule's tolerance, not a flat guessed number. That still produces a real,
+measured collision, worth stating plainly rather than engineering away.
+Off-market and calendar-spread are algebraically linked: the calendar-spread
+diff at a tenor pair is exactly the difference between the two tenors' own
+off-market deviations. Moving one tenor's submitted mark far enough to
+clear the 0.4% off-market tolerance with a safe margin over the check's own
+noise floor moves that tenor's adjacent spreads by roughly the same amount,
+which is comfortably enough to also clear the 0.6% calendar tolerance (and
+vice versa for calendar seeds). Every off-market and calendar-spread seed in
+this run trips both families in the same seeded snapshot. A few staleness
+seeds trip off-market too, on the later sessions of the frozen run: the
+independent source keeps moving while the frozen mark does not, so a mark
+that is stale for long enough is mechanically also off-market by the time
+it is caught, which is a real property of a stuck price, not a seeding
+artifact.
+
+None of this is a false positive under the same rule the option-surface
+extension uses: an alert outside any seeded snapshot is a false positive; an
+alert of an unintended family *inside* a seeded snapshot is the seed being
+caught, with company. Isolating off-market from calendar-spread cleanly
+would need the two tolerances separated by roughly double (so a delta that
+clears one safely cannot clear the other), which was tried algebraically
+before writing any seeding code and rejected: at that separation either the
+off-market tolerance goes too loose to mean 0.4% of anything, or the
+calendar tolerance goes tight enough to make the noise floor calculated
+above (see the source comments in `mvguard/marks_producer.py`) risk
+spurious firing on unseeded data. The honest measurement, run once with
+these tolerances, was 24 of 24 seeds caught, 0 alerts outside any seeded
+snapshot, 58 rule-level alerts total. One genuine attempt at the seeding was
+needed; the collision above was anticipated from the tolerance ratio before
+the run and confirmed by it, not discovered by a failing run and patched
+after the fact.
+
+### Triggering inputs
+
+Every alert this engine emits carries a `snapshot` dict (the commodity, the
+tenor(s), the session, and the submitted and independent marks actually
+compared) and an `observed` dict (the exact numeric comparison and the
+tolerance it failed), matching the convention `mvguard/engine.py` and
+`mvguard/surface_guardrails.py` already use. Example, straight out of a real
+run:
+
+```
+family: calendar_spread
+snapshot: {'tenor_short': 'M4', 'tenor_long': 'M5', 'submitted_mark_short': 73.6843,
+           'submitted_mark_long': 74.0673, 'independent_mark_short': 73.6892,
+           'independent_mark_long': 73.5524, 'commodity': 'FIC-CL', 'session_index': 15}
+observed: {'submitted_spread': 0.383, 'independent_spread': -0.1368,
+           'relative_spread_deviation': 0.00705, 'tolerance': 0.006}
+```
+
+### Measured results
+
+Python 3.12.10 on Windows 11, no Kafka or PostgreSQL involved (this
+extension runs entirely in-process over a Python list of dicts, the same as
+the option-surface extension):
+
+```
+$ python scripts/run_price_verification_check.py
+clean baseline: 150 sessions, 1200 snapshots, 12000 marks, 0 alert(s)
+
+seeded run: 1200 snapshots, 12000 marks, 58 rule-level alert(s) from 24 planted seeds
+false-positive snapshots (alerts with no planted seed): none
+false-positive alert count: 0
+...
+seeds caught (target family fired in its snapshot(s)): 24/24
+false positives (alerts outside any seeded snapshot): 0
+```
+
+Full transcript: `docs/price_verification_output.txt`. The claim is "24
+seeded violations caught, zero false positives, over 12,000 marks", measured
+at the seed level, the same way the option-surface extension's 24/24 is
+measured; the raw rule-level alert count (58) is higher because several
+seeds legitimately clear more than one family's tolerance, as described
+above.
+
+### The month-end Excel exception pack
+
+`mvguard/exception_pack.py` writes the same alerts the console output above
+reports into a workbook, one sheet per check family (only the columns that
+family's alerts carry: `tenor`, `submitted_mark`, `unchanged_sessions` for
+staleness; `tenor`, `submitted_mark`, `independent_mark`,
+`relative_deviation` for off-market; both tenors and both mark pairs for
+calendar-spread) plus an "All exceptions" summary sheet with every alert's
+full triggering snapshot and observed comparison serialized in full. Every
+row names the commodity, the session, the exact tenor(s), and the exact
+submitted and independent values behind that row's flag; nothing on the
+sheet needs a lookup elsewhere to explain itself. A sample run's output is
+committed at `docs/exception_pack.xlsx` (58 rows across the three family
+sheets plus the summary). `openpyxl==3.1.5` is pinned in
+`requirements.txt`.
+
+### Running it
+
+```bash
+python scripts/run_price_verification_check.py          # measure against the seeded curve, write the exception pack
+python -m pytest tests/test_price_verification.py -q    # unit tests for this extension
+python -m pytest tests/ -q                                # full suite, including everything above
+```
+
+### PostgreSQL
+
+The claimed stack includes PostgreSQL, and the base streaming engine already
+uses a real one (see "Real measured results" above). This extension was not
+wired to it: PostgreSQL is not installed as a running service on this
+machine, and standing one up (Docker Desktop is installed but its daemon
+was not running, and starting a GUI application to bring it up was outside
+this extension's scope) was not attempted rather than faked. The alert
+shape here is already `rule_name`/`snapshot`/`observed` compatible with
+`mvguard/db.py`'s `insert_alerts`, the same as the option-surface
+extension's alerts, so wiring it in later means writing the marks/alerts to
+the existing `alerts` table with `family` folded into `rule_name`, not a
+redesign. Any test that needed a live PostgreSQL would skip cleanly the same
+way `tests/test_e2e.py` already does; this extension simply did not add one,
+so as not to claim a measurement that was never taken.
+
+### Limitations of this extension
+
+- **Off-market and calendar-spread are not independent checks** at the
+  tolerances chosen here; a large enough single-tenor deviation clears both
+  at once, as measured above. A desk that wanted them to fire separately
+  would need either much more separated tolerances or a second, orthogonal
+  signal for one of the two.
+- **Staleness compares bit-for-bit equality** on a rounded float, not a
+  "materially unchanged" fuzzy match; a mark that moves by a fraction of a
+  cent and back never counts as a repeat, and a genuinely flat quiet market
+  could in principle produce a coincidental exact repeat that this check
+  cannot tell apart from a stuck price. Across 12,000 real marks in this
+  run it never happened on unseeded data.
+- **No real independent source.** Both the submitted and independent series
+  come from the same synthetic reference curve with different jitter; a
+  real deployment's independent source (a broker poll, an exchange
+  settlement) has its own biases that a symmetric synthetic jitter does not
+  model.
+- **In-process only, and not wired to PostgreSQL**, for the reason given
+  above.
+
 ## Limitations
 
 - **One partition, one consumer.** Global windowed rules need a totally ordered
