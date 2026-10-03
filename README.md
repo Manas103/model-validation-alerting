@@ -6,7 +6,13 @@ and routes every breach to an alert with the triggering input snapshot attached.
 
 Python, Kafka, PostgreSQL. The expression language -- tokenizer, parser,
 evaluator -- is written from scratch; there is no `eval()` anywhere in the
-evaluation path.
+evaluation path. Extended with a second engine for cross-sectional
+no-arbitrage checks on an option surface, a third for independent price
+verification of a forward-mark curve, a fourth for prepayment model
+monitoring, and a fifth that puts the no-arbitrage check into a VBA-driven
+month-end workbook (real VBA, not executed live, since this machine has no
+Excel; reconciled cell for cell against the Python engine by an independently
+written mirror).
 
 ## Honest framing, up front
 
@@ -1061,6 +1067,98 @@ python -m pytest tests/ -q                                # full suite, includin
   fields but at different scopes**; a real deployment would likely also
   want a per-cohort, not just per-population, staleness-aware version of
   the CPR check, which this extension does not add.
+
+## Extension: VBA-driven month-end workbook for the no-arbitrage check
+
+Everything above this section, including all three prior extensions, is
+unchanged. This is a fifth, small extension: the no-arbitrage check above
+already catches 24 of 24 seeded violations with zero false positives over
+12,000 quotes; this extension puts that same check into the month-end Excel
+workbook a non-engineer actually opens, driven by VBA instead of a Python
+script.
+
+- **This machine has no Excel installed** (no registered `Excel.Application`
+  COM class, confirmed before writing a line of VBA). `vba/MonthEndReview.bas`
+  is the real production design, committed and reviewable, but not executed
+  live. `mvguard/vba_mirror.py` is an independently written Python
+  transliteration of the same worksheet-shaped algorithm (flat rows grouped
+  by a composite key the way a VBA `Scripting.Dictionary` would, sorted with
+  an explicit insertion sort since VBA `Collection`s have no built-in sort),
+  used to measure what the macro would produce. The same disclosed design was
+  used once before in this portfolio, on `equilibrium-catalyst-report-addin`.
+- **The reconciliation is real even though the macro is not run live.**
+  `mvguard/surface_guardrails.py` (the engine above) and
+  `mvguard/vba_mirror.py` are two independently coded implementations of the
+  same four identities, evaluated over the same seeded 300-snapshot,
+  12,000-quote surface and diffed cell for cell on every (snapshot, family)
+  pair.
+
+### What `vba/MonthEndReview.bas` does
+
+Two subs, callable from one `RunMonthEndReview`. `RefreshExceptionPack` reads
+the "Quotes" sheet, recomputes put-call parity, strike monotonicity,
+butterfly convexity and calendar-spread exactly as
+`mvguard/surface_guardrails.py` defines them (the same four tolerances,
+copied by hand from `rules/option_surface_guardrails.yaml` since the macro
+does not parse YAML), and writes every violation to "Exceptions" plus a
+per-snapshot, per-family count to "VBASummary". `ReconcileToEngine` diffs
+"VBASummary" against "EngineSummary" (pasted in from the Python engine's own
+run) and writes a MATCH/MISMATCH row per cell to "Reconciliation", plus a
+final pass/fail cell.
+
+### Measured results
+
+Python 3.12.10 on Windows 11, no Excel involved (see above):
+
+```
+$ python scripts/build_month_end_workbook.py
+month-end workbook reconciliation: 300 snapshots, 12000 quotes, 24 planted seeds
+
+Python engine (mvguard/surface_guardrails.py):
+  seeds caught: 24/24
+  false positives: 0
+
+VBA mirror (mvguard/vba_mirror.py, standing in for vba/MonthEndReview.bas):
+  seeds caught: 24/24
+  false positives: 0
+
+cell-for-cell reconciliation: 1200 (snapshot, family) cells checked, 0 mismatch(es)
+ALL MATCH: True
+
+workbook written to docs/month_end_exception_pack_vba.xlsx
+```
+
+Full transcript: `docs/vba_reconciliation_output.txt`. The workbook itself is
+committed at `docs/month_end_exception_pack_vba.xlsx`: a "Quotes" sheet
+holding the 24 seeded snapshots (960 of the 12,000 quotes, enough for a
+reviewer to see every planted violation in context without checking in a
+much larger raw dump of synthetic data), "EngineSummary" and "VBASummary"
+(300 x 4 = 1,200 rows each), and "Reconciliation" with the full cell-for-cell
+diff. The 1,200-cell reconciliation itself runs over the complete
+12,000-quote surface, not just the 960 quotes shown in the sheet.
+
+### Running it
+
+```bash
+python scripts/build_month_end_workbook.py          # measure, reconcile, write the workbook
+python -m pytest tests/test_vba_mirror.py -q        # unit tests for this extension
+python -m pytest tests/ -q                           # full suite, including everything above
+```
+
+### Limitations of this extension
+
+- **The macro is not executed live.** This machine has no Excel;
+  `mvguard/vba_mirror.py` measures the algorithm `vba/MonthEndReview.bas`
+  implements, not the macro itself running inside a workbook. The honest
+  claim is "the VBA design reconciles cell for cell with the Python engine",
+  not "this macro was run in Excel and did."
+- **Tolerances are duplicated, not shared.** `vba/MonthEndReview.bas`
+  hardcodes the same four numbers in `rules/option_surface_guardrails.yaml`
+  because parsing YAML from VBA was out of scope for one session; a change to
+  the YAML needs the same change made by hand in the macro.
+- **The committed workbook's "Quotes" sheet is a 960-quote subset** (the 24
+  seeded snapshots), not the full 12,000, for file-size reasons; the
+  reconciliation numbers above are measured over the full surface regardless.
 
 ## Limitations
 

@@ -1,0 +1,14 @@
+month-end workbook reconciliation: 300 snapshots, 12000 quotes, 24 planted seeds
+
+Python engine (mvguard/surface_guardrails.py):
+  seeds caught: 24/24
+  false positives: 0
+
+VBA mirror (mvguard/vba_mirror.py, standing in for vba/MonthEndReview.bas):
+  seeds caught: 24/24
+  false positives: 0
+
+cell-for-cell reconciliation: 1200 (snapshot, family) cells checked, 0 mismatch(es)
+ALL MATCH: True
+
+workbook written to docs/month_end_exception_pack_vba.xlsx
